@@ -26,16 +26,14 @@ func main() {
 		" sslmode=disable" +
 		" port=" + pgPort +
 		" host=" + pgHost
-	conn, err := connectToDb(connStr)
-	if err != nil {
-		panic(err)
-	}
-	err = conn.Listen(pgChannel)
+	listener, err := NewPgListener(connStr, pgChannel)
 	if err != nil {
 		panic(err)
 	}
 	ctx := context.Background()
-	go updateHtmlOnNotification(conn, ctx, rmarkdownPath)
+	notifications := make(chan *pgx.Notification)
+	listener.NotifyOnNotification(ctx, notifications)
+	go updateHtmlOnNotification(notifications, rmarkdownPath)
 
 	htmlPath := strings.Replace(rmarkdownPath, ".Rmd", ".html", 1)
 	fn, err := deliverRequestFactory(htmlPath)
@@ -57,24 +55,11 @@ func deliverRequestFactory(htmlPath string) (func(http.ResponseWriter, *http.Req
 	}, nil
 }
 
-func connectToDb(connStr string) (*pgx.Conn, error) {
-	config, err := pgx.ParseConnectionString(connStr)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.Connect(config)
-}
 
-func updateHtmlOnNotification(conn *pgx.Conn, ctx context.Context, rMarkDownFilePath string) error {
-	notifications := make(chan *pgx.Notification)
-	go channelNotifications(conn, ctx, notifications)
+func updateHtmlOnNotification(notifications <-chan *pgx.Notification, rMarkDownFilePath string) error {
 	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case <- notifications:
-			updateHtml(rMarkDownFilePath)
-		}
+		<-notifications
+		updateHtml(rMarkDownFilePath)
 	}
 }
 
@@ -82,19 +67,4 @@ func updateHtml(rMarkDownFilePath string) error {
 	command := exec.Command("Rscript", "-e", "'rmarkdown::render(\"" + rMarkDownFilePath + "\")' ")
 	err := command.Start()
 	return err
-}
-
-func channelNotifications(conn *pgx.Conn, ctx context.Context, notifications chan<- *pgx.Notification) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		default:
-			if notification, err := conn.WaitForNotification(ctx); err != nil {
-				return err
-			} else if notification != nil {
-				 notifications <- notification
-			}
-		}
-	}
 }
